@@ -27,8 +27,8 @@ def get_video(id):
     video = next(vid for vid in all_videos if vid.id == id)
     return video
 
-
-def chunk_transcript(docs, chunk_size):
+# TODO: Rename to chunk_doc
+def chunk_doc(docs, chunk_size):
     """
     chunk transcript to fit into context of your LLM
     :param docs:
@@ -39,12 +39,16 @@ def chunk_transcript(docs, chunk_size):
         yield docs[i: i + chunk_size]  # Yield the current chunk
 
 
+
+
+
 def send_msg_openai(chunk_prompt, llm=LLM()):
+    print("Sendiing call to OPENAI",chunk_prompt)
     response = llm.chat(message=chunk_prompt)
     print(response)
     output = json.loads(response["choices"][0]["message"]["content"])
-    sentences = output.get('sentences')
-    return sentences
+
+    return output
 
 
 def send_msg_claude(chunk_prompt, llm):
@@ -56,7 +60,7 @@ def send_msg_claude(chunk_prompt, llm):
 def text_prompter(transcript_text, prompt, llm=None):
     chunk_size = 10000
     # sentence tokenizer
-    chunks = chunk_transcript(transcript_text, chunk_size=chunk_size)
+    chunks = chunk_doc(transcript_text, chunk_size=chunk_size)
     # print(f"Length of the sentence chunk are {len(chunks)}")
 
     if llm is None:
@@ -110,13 +114,170 @@ def text_prompter(transcript_text, prompt, llm=None):
     # make a parallel call to all chunks with prompts
     with concurrent.futures.ThreadPoolExecutor() as executor:
         future_to_index = {
-            executor.submit(llm_caller_fn, prompt): prompt for prompt in prompts
+            executor.submit(llm_caller_fn, prompt, llm): prompt for prompt in prompts
         }
         for future in concurrent.futures.as_completed(future_to_index):
             try:
-                matches.extend(future.result())
+                result = future.result()
+                if 'sentences' in result:
+                    matches.extend(result['sentences'])
+                else:
+                    print(f"Warning: 'sentences' key not found in result: {result}")
             except Exception as e:
                 print(f"Chunk failed to work with LLM {str(e)}")
+    
     return matches
+
+
+
+
+# TODO: Use same function call to the OPENA AI 
+def send_msg_openai(chunk_prompt, llm=LLM()):
+    print("Sendiing call to OPENAI",chunk_prompt)
+    response = llm.chat(message=chunk_prompt)
+    print(response)
+    return json.loads(response["choices"][0]["message"]["content"])
+
+
+
+def send_msg_claude(chunk_prompt, llm):
+    response = llm.chat(message=chunk_prompt)
+    # TODO : add claude reposnse parser
+    return response
+
+def scene_prompter(transcript_text, prompt, llm=None):
+    chunk_size = 20
+    # sentence tokenizer
+    chunks = chunk_doc(transcript_text, chunk_size=chunk_size)
+    # print(f"Length of the sentence chunk are {(chunks)[0]}")
+
+    llm_caller_fn = send_msg_openai
+    if llm is None:
+        llm = LLM()
+
+    # 400 sentence at a time
+    if llm.type == LLMType.OPENAI:
+        llm_caller_fn = send_msg_openai
+    else:
+        # claude for now
+        llm_caller_fn = send_msg_claude
+
+    matches = []
+    prompts = []
+    i = 0
+
+    for chunk in chunks:
+        descriptions = [scene['description'] for scene in chunk]
+        # print(descriptions,chunk)
+        chunk_prompt = """
+        You are a video editor who uses AI. Given a user prompt and AI-generated scene descriptions of a video, analyze the descriptions to identify segments relevant to the user prompt for creating clips.
+
+        - **Instructions**: 
+            - Evaluate the scene descriptions for relevance to the specified user prompt.
+            - Ensure that selected segments have clear start and end points, covering complete ideas or actions.
+            - Choose segments with the highest relevance and most comprehensive content.
+            - Optimize for engaging viewing experiences, considering visual appeal and narrative coherence.
+            - If closely related descriptions exist, combine them into a single, cohesive segment.
+            - Each selected segment should be substantial enough for a meaningful clip, typically covering at least 5 to 10 seconds of video content.
+
+            - User Prompts: Interpret prompts like 'find exciting moments' or 'identify key plot points' by matching keywords or themes in the scene descriptions to the intent of the prompt.
+        """
+
+        chunk_prompt += f"""
+        Descriptions: {json.dumps(descriptions)}
+        User Prompt: {prompt}
+        """
+
+
+        chunk_prompt += """
+         **Output Format**: Return a JSON list named 'result' that containes the  fileds `sentence`, `start`, `end` Ensure the final output
+        strictly adheres to the JSON format specified without including additional text or explanations. \
+        For the start and end use seconds as format
+        If there is no match return empty list without additional text. Use the following structure for your response:
+        {"result":{"descriptions":<>, "start":<>, "end":<>}}
+        """
+        prompts.append(chunk_prompt)
+        i += 1
+    
+    for prompt in prompts:
+      try:
+        res = llm_caller_fn(prompt)
+        # print(res)
+        matches.append(res)
+      except Exception as e:
+        print(f"Chunk failed to work with LLM {str(e)}")
+    return matches
+
+
+
+def extract_timestamps(data):
+    timeframes = []
+    for item in data:
+        data_2 = item.get("result")
+        for time in data_2:
+            start_time = time.get('start')
+            end_time = time.get('end')
+            if start_time and end_time:
+                start_seconds = convert_to_seconds(start_time)
+                end_seconds = convert_to_seconds(end_time)
+                timeframes.append({
+                'start_time': start_seconds,
+                'end_time': end_seconds
+            })
+            print(f"Extracted timeframe: start={start_seconds}, end={end_seconds}")  
+    return timeframes
+
+def convert_to_seconds(time):
+    if isinstance(time, str):
+        parts = time.split(':')
+        if len(parts) == 3:
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+        elif len(parts) == 2:
+            return int(parts[0]) * 60 + int(parts[1])
+        else:
+            return int(time)
+    elif isinstance(time, int):
+        return time
+    else:
+        raise ValueError("Unsupported time format")
+
+def merge_timeframes(timeframes):
+    if not timeframes:
+        print("No timeframes to merge")  
+        return []
+    
+    sorted_timeframes = sorted(timeframes, key=lambda x: x['start_time'])
+    merged_timeframes = [sorted_timeframes[0]]
+
+    for timeframe in sorted_timeframes[1:]:
+        last = merged_timeframes[-1]
+        if last['end_time'] >= timeframe['start_time']:
+            last['end_time'] = max(last['end_time'], timeframe['end_time'])
+            print(f"Merging: {last}")  
+        else:
+            merged_timeframes.append(timeframe)
+            print(f"Appending: {timeframe}")  
+
+    return merged_timeframes
+
+# def construct_timeline_and_stream( selected_frames):
+#     timeline = Timeline(conn)
+    
+#     print("Selected frames:", selected_frames)  
+
+#     for frame in selected_frames:
+#         print("Adding frame:", frame)  
+#         video_asset = VideoAsset(
+#             asset_id=video_id,
+#             start=frame['start_time'],
+#             end=frame['end_time']
+#         )
+#         timeline.add_inline(video_asset)
+    
+#     print("Timeline created:", timeline)  
+    
+#     stream_url = timeline.generate_stream()
+#     print("Stream URL:", stream_url)
+#     return play_stream(stream_url)
 
 
