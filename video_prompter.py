@@ -209,6 +209,119 @@ def scene_prompter(transcript_text, prompt, llm=None):
     return matches
 
 
+def create_multimodal_chunks_individual(transcript, scenes, chunk_size=5):
+    """
+    Create multimodal data chunks for each individual scene within specified chunk size intervals.
+
+    :param transcript: List of transcript entries, each with 'start', 'end', and 'text' fields.
+    :param scenes: List of scene data, each with 'start', 'end', and 'description' fields.
+    :param chunk_size: Number of scenes to group into each chunk. Default is 5.
+    :return: List of multimodal data chunks.
+    """
+    def filter_text_by_time(transcript, start_time, end_time):
+        result = []
+
+        for entry in transcript:
+            if float(entry['end']) > start_time and float(entry['start']) < end_time:
+                text = entry['text']
+                if text != '-':
+                    result.append(text)
+
+        return ' '.join(result)
+
+    chunks = []
+
+    for i in range(0, len(scenes), chunk_size):
+        chunk = []
+        for scene in scenes[i:i+chunk_size]:
+            spoken = filter_text_by_time(transcript, float(scene["start"]), float(scene["end"]))
+            data = {
+                "visual": scene["description"], 
+                'spoken': spoken, 
+                'start': scene["start"], 
+                'end': scene["end"]
+            }
+            chunk.append(data)
+        chunks.append(chunk)
+
+    return chunks
+
+
+def multimodal_prompter(transcript, scene_index,prompt, llm=None):
+
+    chunks = create_multimodal_chunks_individual(transcript, scene_index)
+
+
+    if llm is None:
+        llm = LLM()
+
+    if llm.type == LLMType.OPENAI:
+        llm_caller_fn = send_msg_openai
+    else:
+        llm_caller_fn = send_msg_claude
+
+    matches = []
+    prompts = []
+    i = 0
+    for chunk in chunks:
+
+
+        chunk_prompt = f"""
+       You are given visual and spoken information of the video of each second, and a transcipt of what's being spoken along with timestamp.
+        Your task is to evaluate the data for relevance to the specified user prompt.
+        Corelate visual and spoken content to find the relevant video segment.
+        provide the start and end timestamps by analyse the full chunk and give longest matching timestamps. You can merge the 1 second chunks and transcripts to make continuous response.
+
+        Multimodal Data:
+        video: {chunk}
+        User Prompt: {prompt}
+
+    
+        """
+        chunk_prompt += """
+         **Output Format**: Return a JSON list named 'result' that containes the  fileds `sentence`, `start`, `end` Ensure the final output
+        strictly adheres to the JSON format specified without including additional text or explanations. \
+        If there is no match return empty list without additional text. Use the following structure for your response:
+        {"result":{"visual":<>,"spoken": <>, "start":<>, "end":<>}}
+        """
+        prompts.append(chunk_prompt)
+        i += 1
+
+
+    for prompt in prompts:
+      try:
+        res = llm_caller_fn(prompt)
+        # print(res)
+        matches.append(res)
+      except Exception as e:
+        print(f"Chunk failed to work with LLM {str(e)}")
+    return matches
+
+def extract_clip_sentences(matches):
+    sentences = []
+    
+    for index, item in enumerate(matches):
+        try:
+            # Assuming each item is a list with one dictionary element
+            if isinstance(item, list) and len(item) > 0:
+                item_dict = item[0]
+            else:
+                item_dict = item
+
+            # Extracting the sentence
+            sentence = item_dict['result']['spoken']
+            sentences.append(sentence)
+
+            # Optional: Print information about the processed item
+            print(f"Processed Item {index}")
+
+        except (TypeError, KeyError, IndexError) as e:
+            print(f"Error processing item {index}: {e}")
+            print(f"Item content: {item}")
+            print("\n" + "-"*50 + "\n")
+
+    return sentences
+
 
 def extract_timestamps(data):
     timeframes = []
@@ -259,6 +372,48 @@ def merge_timeframes(timeframes):
             print(f"Appending: {timeframe}")  
 
     return merged_timeframes
+
+def extract_timestamps_multimodal(matches):
+    timeframes = []
+    for index, item in enumerate(matches):
+        try:
+            # Handle case where item might be None or not a dictionary
+            if not item or not isinstance(item, dict):
+                print(f"Skipping item {index}: Invalid or empty data")
+                continue
+
+            result = item.get('result')
+            if not result or not isinstance(result, dict):
+                print(f"Skipping item {index}: No valid 'result' found")
+                continue
+
+            spoken = result.get('spoken')
+            start_time = result.get('start')
+            end_time = result.get('end')
+
+            if start_time is not None and end_time is not None:
+                try:
+                    start_seconds = convert_to_seconds(start_time)
+                    end_seconds = convert_to_seconds(end_time)
+                    timeframes.append({
+                        'start_time': start_seconds,
+                        'end_time': end_seconds,
+                        'spoken': spoken
+                    })
+                    print(f"Extracted timeframe {index}: start={start_seconds}, end={end_seconds}")
+                except ValueError as ve:
+                    print(f"Skipping item {index}: Invalid time format - {ve}")
+            else:
+                print(f"Skipping item {index}: Missing start or end time")
+
+        except Exception as e:
+            print(f"Error processing item {index}: {e}")
+
+    return timeframes
+
+
+
+
 
 # def construct_timeline_and_stream( selected_frames):
 #     timeline = Timeline(conn)
