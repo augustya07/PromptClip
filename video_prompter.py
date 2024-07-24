@@ -27,10 +27,9 @@ def get_video(id):
     video = next(vid for vid in all_videos if vid.id == id)
     return video
 
-# TODO: Rename to chunk_doc
 def chunk_doc(docs, chunk_size):
     """
-    chunk transcript to fit into context of your LLM
+    chunk document to fit into context of your LLM
     :param docs:
     :param chunk_size:
     :return:
@@ -43,11 +42,8 @@ def chunk_doc(docs, chunk_size):
 
 
 def send_msg_openai(chunk_prompt, llm=LLM()):
-    print("Sendiing call to OPENAI",chunk_prompt)
     response = llm.chat(message=chunk_prompt)
-    print(response)
     output = json.loads(response["choices"][0]["message"]["content"])
-
     return output
 
 
@@ -131,14 +127,6 @@ def text_prompter(transcript_text, prompt, llm=None):
 
 
 
-# TODO: Use same function call to the OPENA AI 
-def send_msg_openai(chunk_prompt, llm=LLM()):
-    print("Sendiing call to OPENAI",chunk_prompt)
-    response = llm.chat(message=chunk_prompt)
-    print(response)
-    return json.loads(response["choices"][0]["message"]["content"])
-
-
 
 def send_msg_claude(chunk_prompt, llm):
     response = llm.chat(message=chunk_prompt)
@@ -168,7 +156,6 @@ def scene_prompter(transcript_text, prompt, llm=None):
 
     for chunk in chunks:
         descriptions = [scene['description'] for scene in chunk]
-        # print(descriptions,chunk)
         chunk_prompt = """
         You are a video editor who uses AI. Given a user prompt and AI-generated scene descriptions of a video, analyze the descriptions to identify segments relevant to the user prompt for creating clips.
 
@@ -177,8 +164,6 @@ def scene_prompter(transcript_text, prompt, llm=None):
             - Ensure that selected segments have clear start and end points, covering complete ideas or actions.
             - Choose segments with the highest relevance and most comprehensive content.
             - Optimize for engaging viewing experiences, considering visual appeal and narrative coherence.
-            - If closely related descriptions exist, combine them into a single, cohesive segment.
-            - Each selected segment should be substantial enough for a meaningful clip, typically covering at least 5 to 10 seconds of video content.
 
             - User Prompts: Interpret prompts like 'find exciting moments' or 'identify key plot points' by matching keywords or themes in the scene descriptions to the intent of the prompt.
         """
@@ -192,7 +177,7 @@ def scene_prompter(transcript_text, prompt, llm=None):
         chunk_prompt += """
          **Output Format**: Return a JSON list named 'result' that containes the  fileds `sentence`, `start`, `end` Ensure the final output
         strictly adheres to the JSON format specified without including additional text or explanations. \
-        For the start and end use seconds as format
+        Output start and end time same as description
         If there is no match return empty list without additional text. Use the following structure for your response:
         {"result":{"descriptions":<>, "start":<>, "end":<>}}
         """
@@ -296,6 +281,17 @@ def multimodal_prompter(transcript, scene_index,prompt, llm=None):
       except Exception as e:
         print(f"Chunk failed to work with LLM {str(e)}")
     return matches
+
+def extract_descriptions(data):
+    descriptions = []
+    for item in data:
+        if 'result' in item:
+            for result in item['result']:
+                if 'descriptions' in result:
+                    descriptions.append(result['descriptions'])
+                elif 'description' in result:
+                    descriptions.append(result['description'])
+    return descriptions
 
 def extract_clip_sentences(matches):
     sentences = []
